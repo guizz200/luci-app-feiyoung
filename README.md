@@ -78,50 +78,43 @@ luci-app-feiyoung/
 
 | 文件 | 适用固件 |
 |---|---|
+| `luci-app-feiyoung-1.0.0-r1.apk` | **apk 系**：OpenWrt 25.12+、FanchmWrt 1.0.5 |
 | `luci-app-feiyoung_1.0.0-1_all.ipk` | **opkg 系**：OpenWrt 21.02 / 23.05 / 24.10、FanchmWrt 1.0.4 及更早、ImmortalWrt |
 | `luci-app-feiyoung-1.0.0-src.tar.gz` | 源码包，可自行编译或直接拷贝安装 |
 
-> **关于 apk**：OpenWrt 25.12+ / FanchmWrt 1.0.5 起改用 apk 包管理，apk v3 格式（ADB 二进制 + zstd + 独立签名）需要官方 `abuild` 工具链构建。
-> 目前尚未提供 apk 包，请使用下方的「源码安装」方式，功能完全一致。
-
-### 安装 ipk
+### 安装 apk（25.12+ / FanchmWrt 1.0.5）
 
 ```sh
-# 上传到路由器
-scp luci-app-feiyoung_1.0.0-1_all.ipk root@192.168.1.1:/tmp/
+scp luci-app-feiyoung-1.0.0-r1.apk root@192.168.1.1:/tmp/
+ssh root@192.168.1.1
+apk add --allow-untrusted /tmp/luci-app-feiyoung-1.0.0-r1.apk
+```
 
-# SSH 登录后安装
+> 用 `--allow-untrusted` 是因为包没有官方私钥签名。若你的固件支持自建密钥，可用 `apk adbsign` 重签。
+
+### 安装 ipk（opkg 系统）
+
+```sh
+scp luci-app-feiyoung_1.0.0-1_all.ipk root@192.168.1.1:/tmp/
 ssh root@192.168.1.1
 opkg install /tmp/luci-app-feiyoung_1.0.0-1_all.ipk
 
-# 如果提示依赖缺失，先装依赖
+# 如果提示依赖缺失
 opkg update && opkg install curl luci-compat
 ```
 
-**升级不会覆盖你已有的配置** —— 包内的默认配置以 `feiyoung-opkg` 安装，`postinst` 只在 `/etc/config/feiyoung` 不存在时才采用它。
+**两种包升级都不会覆盖你已有的配置** —— 默认配置以 `feiyoung-opkg` / `feiyoung.apk-new` 形式安装，安装脚本只在 `/etc/config/feiyoung` 不存在时才启用它。
 
-### apk 系统（25.12+/1.0.5）用源码安装
+### 源码安装（任何系统）
 
 ```sh
 tar -xzf luci-app-feiyoung-1.0.0-src.tar.gz
 cd luci-app-feiyoung-1.0.0
 sh install.sh
 ```
-
-或手动：
-
-```sh
-scp -r root/* root@192.168.1.1:/
-ssh root@192.168.1.1
-chmod +x /usr/bin/feiyoung.sh /usr/bin/feiyoung-schedule.sh \
-          /usr/lib/feiyoung/daemon.sh /usr/libexec/rpcd/luci.feiyoung /etc/init.d/feiyoung
-/etc/init.d/feiyoung enable && /etc/init.d/feiyoung start
-rm -f /tmp/luci-indexcache* && /etc/init.d/rpcd restart && /etc/init.d/uhttpd restart
-```
-
 ## CPU 架构与兼容性
 
-### 一句话：**这个 ipk 不挑 CPU 架构，任何架构都能装。**
+### 一句话：**这两个包都不挑 CPU 架构，任何架构都能装。**
 
 原因很简单 —— 包里 **12 个文件全部是文本脚本，没有任何编译出来的二进制**：
 
@@ -137,7 +130,7 @@ rm -f /tmp/luci-indexcache* && /etc/init.d/rpcd restart && /etc/init.d/uhttpd re
 | `usr/share/rpcd/acl.d/*.json` | JSON |
 | `www/.../view/feiyoung/*.js` | LuCI 前端 JS |
 
-所以 `control` 里写的是 `Architecture: all`，opkg 在任何架构上都会接受它。
+所以 ipk 的 `control` 里是 `Architecture: all`、apk 的 `info` 里是 `arch: noarch`，两种包管理器在任何架构上都会接受。
 
 ### 适用架构（全部）
 
@@ -167,7 +160,7 @@ rm -f /tmp/luci-indexcache* && /etc/init.d/rpcd restart && /etc/init.d/uhttpd re
 
 1. **非 OpenWrt 系统** —— 如原厂固件、Padavan、梅林、ROS。没有 `uci`/`ubus`/`procd`，装了也跑不起来。
 2. **没有 `luci-compat` 的极简 LuCI** —— 本插件前端用 Lua controller + rpcd，需要该兼容层。如果你自己裁剪过 LuCI，需自行补 `rpcd` 后端或改写成 ucode。
-3. **OpenWrt 25.12+ 的 apk 系统** —— 不是架构问题，是**包管理器不同**。用源码包安装即可（见上文）。
+3. **OpenWrt 25.12+ 的 apk 系统** —— 已提供 `luci-app-feiyoung-1.0.0-r1.apk`，直接 `apk add` 即可，无需源码安装。
 
 ### 自己确认设备架构
 
@@ -188,9 +181,7 @@ for c in curl uci ubus ifup ifdown logger; do
 done
 dpkg -l 2>/dev/null | grep luci-compat || opkg list-installed | grep luci-compat
 ```
-## 安装
-
-### 方式一：直接拷贝（推荐，适用于已 root 的 OpenWrt）
+### 手动拷贝（不推荐，用于调试）
 
 ```sh
 # 在电脑上，把 root/ 下的内容推到路由器

@@ -1,0 +1,27 @@
+# 飞Young 校园网认证 - 默认配置
+# 安装后请到 LuCI「服务 → 飞Young 校园网 → 配置」填写真实账号密码
+
+config feiyoung 'main'
+	option enabled '1'
+	option device_type 'mobile'
+	option retry_interval '66'
+	option keepalive_interval '120'
+	option timeout '10'
+	option wan_if 'wan'
+	# 账号：一般是手机号，或 ip 开头的账号（如 ip1234567890123）
+	option username ''
+	# 密码：学校分配的密码，用手机号登录时通常是账号后六位
+	option password ''
+	option config_version '2'
+
+config schedule 'schedule'
+	option enabled '0'
+	option off_time '23:30'
+	option on_time '07:00'
+	option mon '1'
+	option tue '1'
+	option wed '1'
+	option thu '1'
+	option fri '1'
+	option sat '1'
+	option sun '1'

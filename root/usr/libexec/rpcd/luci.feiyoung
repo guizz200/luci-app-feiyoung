@@ -1,0 +1,298 @@
+#!/bin/sh
+# LuCI rpcd 后端: 飞Young 校园网管理
+# 安装位置: /usr/libexec/rpcd/luci.feiyoung  (必须 chmod 755)
+#
+# 说明: 本设备未安装 ucode-mod-luci (/usr/share/ucode/luci.uc 不存在),
+#       所以按 /usr/libexec/rpcd/luci.pbr 的约定用 POSIX shell + ubus 的 shell API 实现。
+#       rpcd 调用约定:
+#         ./luci.feiyoung            -> 输出 {"方法名":{...}} 描述表
+#         ./luci.feiyoung call <方法>  -> 从 stdin 读 JSON 参数, 输出 JSON 结果
+
+. /lib/functions.sh
+
+SCRIPT=/usr/bin/feiyoung.sh
+LOGFILE=/var/log/feiyoung.log
+INITSCRIPT=/etc/init.d/feiyoung
+
+# ---------- JSON 输出助手 ----------
+# 把字符串转义成合法的 JSON 字符串内容(含首尾引号)
+json_escape() {
+	printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | awk 'BEGIN{ORS=""}{if(NR>1)printf "\\n"; printf "%s",$0}'
+}
+
+# json_line <key> <value> [<key> <value> ...]
+# 也兼容只传一个参数的情况(直接输出该字符串, 便于排错)
+json_line() {
+	if [ $# -eq 1 ]; then
+		printf '{"result":"%s"}' "$(json_escape "$1")"
+		return 0
+	fi
+	_first=1
+	printf '{'
+	while [ $# -ge 2 ]; do
+		_k="$1"; _v="$2"; shift 2
+		if [ $_first -eq 1 ]; then _first=0; else printf ','; fi
+		printf '"%s":"%s"' "$_k" "$(json_escape "$_v")"
+	done
+	printf '}'
+}
+
+# 读取 rpcd 传进来的参数
+#
+# ⚠️ 这里必须用 cat, 不能用 `while read` 循环!
+# rpcd 把参数写进 stdin 时是【单行且不带结尾换行符】的 JSON,
+# 而 POSIX 的 read 在读到「有内容但无换行符」的最后一行时返回【非零】,
+# 于是 `while read -r line; do ...; done` 的循环体一次都不会执行, INPUT 恒为空。
+# 实测: printf '%s' '{"a":"1"}' | sh -c 'I=""; while read -r l; do I="$I$l"; done; echo "[$I]"'
+#       -> []            (丢了)
+#       printf '%s' '{"a":"1"}' | sh -c 'read I; echo "[$I]"'
+#       -> [{"a":"1"}]   (能拿到, 但只限单行)
+read_input() {
+	INPUT=`cat 2>/dev/null | head -c 65536`
+	# 去掉可能存在的 CR / 换行, 让后面的 sed 匹配更稳
+	INPUT=`printf '%s' "$INPUT" | tr -d '\r\n'`
+}
+
+# ---------- 参数提取 ----------
+# 重要: rpcd 给可执行脚本传的是【JSON】, 不是 XML 标签!
+#   输入形如 {"enabled":"1","off_hour":23,"off_min":30}
+#   (数字会以裸数字形式出现, 没有引号)
+# 早期版本用 sed 抠 <tag>值</tag>, 在 JSON 上永远匹配不到,
+# 表现为「参数全是空」——定时任务就是这样暴露出来的。
+
+# param_str: 取字符串值。先优先无引号的裸值(布尔/数字), 再取带引号的值
+param_str() {
+	_p=`printf '%s' "$INPUT" | sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*\([^",}]*\).*/\1/p' | tail -1`
+	if [ -z "$_p" ]; then
+		_p=`printf '%s' "$INPUT" | sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1`
+	fi
+	printf '%s' "$_p"
+}
+
+# param_num: 取数字值, 只保留数字字符(兼容 "30" / 30)
+param_num() {
+	_v=`param_str "$1"`
+	printf '%s' "$_v" | tr -cd '0-9'
+}
+
+# 兼容旧名字(供排错用, 输出原始输入)
+get_tag() {
+	param_str "$1"
+}
+
+# ---------- 各方法实现 ----------
+do_status() {
+	# 服务是否 enabled / running
+	enabled=`$INITSCRIPT enabled >/dev/null 2>&1 && echo 1 || echo 0`
+	running=`$INITSCRIPT running >/dev/null 2>&1 && echo 1 || echo 0`
+
+	# 真实探测 portal (约 6 秒)
+	probe=`FEIYOUNG_TMO=6 $SCRIPT status 2>/dev/null | head -1`
+	online=0
+	case "$probe" in
+		*ONLINE*) online=1 ;;
+	esac
+
+	# 上次登录结果(取日志最后一条含关键字的行)
+	last=`grep -E '登录成功|登录失败|已经在线|检测到掉线|WAN 恢复成功|未读到账号|短信验证' $LOGFILE 2>/dev/null | tail -1`
+
+	# 账号(不回传密码)
+	u=`uci -q get feiyoung.main.username`
+
+	json_line status "$probe" online "$online" enabled "$enabled" running "$running" last "$last" username "$u"
+}
+
+do_login() {
+	read_input
+	_user=`get_tag username`
+	_pass=`get_tag password`
+	[ -n "$_user" ] && [ -n "$_pass" ] \
+		|| { json_line ok 0 message "账号或密码为空"; return 1; }
+
+	# 走环境变量, 避免密码出现在命令行(ps 可见)
+	_out=`FEIYOUNG_USER="$_user" FEIYOUNG_PASS="$_pass" FEIYOUNG_TMO=20 $SCRIPT login 2>&1`
+	_rc=$?
+
+	if [ $_rc -eq 0 ]; then
+		json_line ok 1 message "$(printf '%s' "$_out" | tail -2 | head -1)"
+	else
+		json_line ok 0 message "$(printf '%s' "$_out" | tail -1)"
+	fi
+}
+
+do_logout() {
+	_out=`FEIYOUNG_TMO=20 $SCRIPT offline 2>&1`
+	_rc=$?
+	if [ $_rc -eq 0 ]; then
+		json_line ok 1 message "$(printf '%s' "$_out" | tail -2 | head -1)"
+	else
+		json_line ok 0 message "$(printf '%s' "$_out" | tail -1)"
+	fi
+}
+
+do_restart() {
+	read_input
+	_wan=`get_tag wan_if`
+	[ -n "$_wan" ] || _wan=wan
+	# 校验接口名, 防止注入
+	case "$_wan" in
+		''|*[!A-Za-z0-9_]*) json_line ok 0 message "WAN 接口名非法"; return 1 ;;
+	esac
+	_output=`FEIYOUNG_WAN="$_wan" $INITSCRIPT reload 2>&1`
+	json_line ok 1 message "$(printf '%s' "$_output" | tail -1)"
+}
+
+do_save() {
+	read_input
+	_user=`get_tag username`
+	_pass=`get_tag password`
+	[ -n "$_user" ] && [ -n "$_pass" ] \
+		|| { json_line ok 0 message "账号或密码为空"; return 1; }
+
+	uci set feiyoung.main.username="$_user"  || { json_line ok 0 message "uci set username 失败"; return 1; }
+	uci set feiyoung.main.password="$_pass"  || { json_line ok 0 message "uci set password 失败"; return 1; }
+	uci set feiyoung.main.enabled='1'
+	uci commit feiyoung                      || { json_line ok 0 message "uci commit 失败"; return 1; }
+	chmod 600 /etc/config/feiyoung 2>/dev/null
+
+	_output=`$INITSCRIPT reload 2>&1`
+	json_line ok 1 message "已保存并重启服务"
+}
+
+do_log() {
+	read_input
+	_n=`param_num lines`
+	case "$_n" in
+		''|*[!0-9]*) _n=200 ;;
+	esac
+	[ "$_n" -gt 1000 ] 2>/dev/null && _n=1000
+	[ "$_n" -lt 10 ] 2>/dev/null && _n=10
+
+	_txt=`tail -n "$_n" $LOGFILE 2>/dev/null`
+	json_line log "$_txt"
+}
+
+# ---------- 定时任务: 生成/更新 crontab ----------
+# 由 LuCI 的「定时任务」页在保存后调用。
+# 生成两条 cron:
+#   到 off_time -> feiyoung-schedule.sh off  (脚本内部会判断是否启用/是否跳过日)
+#   到 on_time  -> feiyoung-schedule.sh on   (只在计划停机窗口内才会恢复)
+do_apply_schedule() {
+	read_input
+	_en=`param_str enabled`
+	_offh=`param_num off_hour`
+	_offm=`param_num off_min`
+	_onh=`param_num on_hour`
+	_onm=`param_num on_min`
+
+	# 注意: "0" 是合法值(例如 0 时 0 分), 不能用 [ -z ] 判断后再赋默认值
+	# 只在「整个请求没带时间」时才用默认值
+	if [ -z "$_offh$_offm$_onh$_onm" ]; then
+		_offh=23; _offm=30; _onh=7; _onm=0
+	fi
+	# 校验: 只允许数字
+	case "$_offh$_offm$_onh$_onm" in
+		''|*[!0-9]*) json_line ok 0 message "时间参数非法"; return 1 ;;
+	esac
+
+	# 写回 UCI(时间以 HH:MM 形式保存)
+	_offtime=`printf '%02d:%02d' "$_offh" "$_offm"`
+	_ontime=`printf '%02d:%02d' "$_onh" "$_onm"`
+	uci set feiyoung.schedule.off_time="$_offtime"
+	uci set feiyoung.schedule.on_time="$_ontime"
+	[ -n "$_en" ] && uci set feiyoung.schedule.enabled="$_en"
+	uci commit feiyoung 2>/dev/null || true
+
+	[ -x /usr/bin/feiyoung-schedule.sh ] || {
+		json_line ok 0 message "缺少 /usr/bin/feiyoung-schedule.sh, 请先更新主程序"
+		return 1
+	}
+
+	# 生成 crontab: 先删掉本插件的旧条目, 再按需要追加
+	# 关键: 必须用绝对路径 /etc/crontabs/root。
+	# rpcd 的运行环境没有 HOME, `crontab -l` 会去 /var/run/rpcd 找文件而不是这里,
+	# 于是「写入成功但 crontab -l 看不到」——直接用文件路径最可靠。
+	_cron=/etc/crontabs/root
+	mkdir -p /etc/crontabs
+	touch "$_cron"
+	_tmp=/tmp/feiyoung.cron.$$
+	grep -v 'feiyoung-schedule.sh' "$_cron" > "$_tmp" 2>/dev/null || true
+
+	# 判断是否真的启用(enabled 且至少勾选一天)
+	_use=0
+	case "$_en" in
+		1|yes|true|on|enabled) _use=1 ;;
+	esac
+	if [ "$_use" = "1" ]; then
+		printf '%s %s * * * /usr/bin/feiyoung-schedule.sh off\n' "$_offm" "$_offh" >> "$_tmp"
+		printf '%s %s * * * /usr/bin/feiyoung-schedule.sh on\n'  "$_onm"  "$_onh"  >> "$_tmp"
+	fi
+	mv "$_tmp" "$_cron"
+	chmod 600 "$_cron"
+	/etc/init.d/cron restart >/dev/null 2>&1 || /etc/init.d/cron reload >/dev/null 2>&1 || true
+
+	# 停用定时任务时, 顺便清理停机标记, 避免服务被一直停着
+	if [ "$_use" != "1" ]; then
+		rm -f /var/run/feiyoung.schedule-off
+	fi
+
+	# 把 crontab 里属于本插件的行回显出来, 便于确认真的写进去了
+	_lines=`grep 'feiyoung-schedule.sh' "$_cron" 2>/dev/null | tr '\n' ';'`
+	if [ "$_use" = "1" ]; then
+		json_line ok 1 message "定时任务已更新(下线 $_offtime / 上线 $_ontime) crontab: $_lines"
+	else
+		json_line ok 1 message "定时任务已停用, 已清除相关 crontab 条目"
+	fi
+	return 0
+}
+
+# ---------- 清空日志 ----------
+do_clear_log() {
+	: > $LOGFILE 2>/dev/null
+	json_line ok 1 message "日志已清空"
+}
+
+# ---------- 排错用: 回显 rpcd 实际传进来的参数 ----------
+# 注意: 这个方法必须在 list 描述表里声明, 否则 rpcd 不会把参数写进 stdin
+# 用法: ubus call luci.feiyoung dump_input '{"a":"1","b":2}'
+do_dump_input() {
+	read_input
+	json_line "INPUT=[$INPUT]"
+}
+
+# ---------- rpcd 入口 ----------
+if [ "$1" = "list" ]; then
+	cat <<'EOF'
+{
+	"status":    { "lines": {} },
+	"login":     { "username": "", "password": "" },
+	"logout":    {},
+	"restart":   { "wan_if": "" },
+	"save":      { "username": "", "password": "" },
+	"log":       { "lines": 200 },
+	"clear_log": {},
+	"dump_input": {},
+	"apply_schedule": { "enabled": "", "off_hour": 23, "off_min": 30, "on_hour": 7, "on_min": 0 }
+}
+EOF
+	exit 0
+fi
+
+if [ "$1" = "call" ]; then
+	case "$2" in
+		status)         do_status ;;
+		login)          do_login ;;
+		logout)         do_logout ;;
+		restart)        do_restart ;;
+		save)           do_save ;;
+		log)            do_log ;;
+		clear_log)      do_clear_log ;;
+		dump_input)     do_dump_input ;;
+		apply_schedule) do_apply_schedule ;;
+		*)              json_line ok 0 message "未知方法: $2" ;;
+	esac
+	exit 0
+fi
+
+echo "用法: $0 {list|call <method>}" >&2
+exit 1

@@ -73,6 +73,51 @@ luci-app-feiyoung/
 
 **为什么断网时不重试登录**：运营商 Portal 对频繁登录有风控，盲目重试可能导致账号被临时拉黑。所以先判断链路是否真的通，不通就只等待。
 
+
+## 下载
+
+| 文件 | 适用固件 |
+|---|---|
+| `luci-app-feiyoung_1.0.0-1_all.ipk` | **opkg 系**：OpenWrt 21.02 / 23.05 / 24.10、FanchmWrt 1.0.4 及更早、ImmortalWrt |
+| `luci-app-feiyoung-1.0.0-src.tar.gz` | 源码包，可自行编译或直接拷贝安装 |
+
+> **关于 apk**：OpenWrt 25.12+ / FanchmWrt 1.0.5 起改用 apk 包管理，apk v3 格式（ADB 二进制 + zstd + 独立签名）需要官方 `abuild` 工具链构建。
+> 目前尚未提供 apk 包，请使用下方的「源码安装」方式，功能完全一致。
+
+### 安装 ipk
+
+```sh
+# 上传到路由器
+scp luci-app-feiyoung_1.0.0-1_all.ipk root@192.168.1.1:/tmp/
+
+# SSH 登录后安装
+ssh root@192.168.1.1
+opkg install /tmp/luci-app-feiyoung_1.0.0-1_all.ipk
+
+# 如果提示依赖缺失，先装依赖
+opkg update && opkg install curl luci-compat
+```
+
+**升级不会覆盖你已有的配置** —— 包内的默认配置以 `feiyoung-opkg` 安装，`postinst` 只在 `/etc/config/feiyoung` 不存在时才采用它。
+
+### apk 系统（25.12+/1.0.5）用源码安装
+
+```sh
+tar -xzf luci-app-feiyoung-1.0.0-src.tar.gz
+cd luci-app-feiyoung-1.0.0
+sh install.sh
+```
+
+或手动：
+
+```sh
+scp -r root/* root@192.168.1.1:/
+ssh root@192.168.1.1
+chmod +x /usr/bin/feiyoung.sh /usr/bin/feiyoung-schedule.sh \
+          /usr/lib/feiyoung/daemon.sh /usr/libexec/rpcd/luci.feiyoung /etc/init.d/feiyoung
+/etc/init.d/feiyoung enable && /etc/init.d/feiyoung start
+rm -f /tmp/luci-indexcache* && /etc/init.d/rpcd restart && /etc/init.d/uhttpd restart
+```
 ## 安装
 
 ### 方式一：直接拷贝（推荐，适用于已 root 的 OpenWrt）

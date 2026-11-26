@@ -118,6 +118,76 @@ chmod +x /usr/bin/feiyoung.sh /usr/bin/feiyoung-schedule.sh \
 /etc/init.d/feiyoung enable && /etc/init.d/feiyoung start
 rm -f /tmp/luci-indexcache* && /etc/init.d/rpcd restart && /etc/init.d/uhttpd restart
 ```
+
+## CPU 架构与兼容性
+
+### 一句话：**这个 ipk 不挑 CPU 架构，任何架构都能装。**
+
+原因很简单 —— 包里 **12 个文件全部是文本脚本，没有任何编译出来的二进制**：
+
+| 文件 | 类型 |
+|---|---|
+| `usr/bin/feiyoung.sh` | POSIX shell 脚本 |
+| `usr/bin/feiyoung-schedule.sh` | POSIX shell 脚本 |
+| `usr/lib/feiyoung/daemon.sh` | POSIX shell 脚本 |
+| `etc/init.d/feiyoung` | shell（rc.common 服务定义）|
+| `etc/config/feiyoung` | UCI 配置文件 |
+| `usr/libexec/rpcd/luci.feiyoung` | **shell 脚本**（不是编译的 ElF）|
+| `usr/share/luci/menu.d/*.json` | JSON |
+| `usr/share/rpcd/acl.d/*.json` | JSON |
+| `www/.../view/feiyoung/*.js` | LuCI 前端 JS |
+
+所以 `control` 里写的是 `Architecture: all`，opkg 在任何架构上都会接受它。
+
+### 适用架构（全部）
+
+| 架构 | 典型设备 |
+|---|---|
+| `aarch64_cortex-a53` / `aarch64_generic` | 高通 IPQ60xx（本插件验证机 RE-CS-02）、MT7986 |
+| `arm_cortex-a7` / `arm_cortex-a9` | MT7621、IPQ40xx、BCM53xx |
+| `mips_24kc` / `mips_4kec` | MT7620/7628、AR71xx |
+| `mipsel_24kc` | MT7621、Ralink |
+| `x86_64` / `i386_pentium4` | 软路由、虚拟机 |
+| `riscv64` | 新平台 |
+
+**只要是 OpenWrt 系（含 FanchmWrt / ImmortalWrt / iStoreOS），不限 CPU。**
+
+### 真正的限制条件（不是 CPU，而是这些）
+
+| 条件 | 说明 | 不满足会怎样 |
+|---|---|---|
+| **OpenWrt 21.02+** | 需要 `procd` + `ubus` + `uci` | 更老版本装不上或服务起不来 |
+| **`curl`** | 认证全靠它发 HTTP | 缺了报 `curl: not found` |
+| **`luci-compat`** | 提供 Lua 兼容层 | LuCI 页面 404 或报错 |
+| **`rpcd`** | ubus 后端 | 状态页拿不到数据 |
+| **shell 是 `/bin/sh`** | 脚本已确认零 bashism，BusyBox ash 可跑 | — |
+| **有 `wan` 接口** | 拨号/认证口 | 可用 `feiyoung.main.wan_if` 改成 `lan1` 等实际名 |
+
+### 什么情况下**会**不兼容
+
+1. **非 OpenWrt 系统** —— 如原厂固件、Padavan、梅林、ROS。没有 `uci`/`ubus`/`procd`，装了也跑不起来。
+2. **没有 `luci-compat` 的极简 LuCI** —— 本插件前端用 Lua controller + rpcd，需要该兼容层。如果你自己裁剪过 LuCI，需自行补 `rpcd` 后端或改写成 ucode。
+3. **OpenWrt 25.12+ 的 apk 系统** —— 不是架构问题，是**包管理器不同**。用源码包安装即可（见上文）。
+
+### 自己确认设备架构
+
+```sh
+uname -m                      # 粗略看：aarch64 / armv7l / mips / x86_64
+opkg print-architecture       # 精确的 opkg 架构名（ipk 系统）
+cat /etc/apk/arch             # apk 系统（如 aarch64_cortex-a53）
+```
+
+即使架构名对不上也没关系 —— 因为包里没有二进制，`Architecture: all` 在任何架构下都放行。
+
+### 运行时依赖检查
+
+```sh
+# 装之前先确认这几个在
+for c in curl uci ubus ifup ifdown logger; do
+  command -v $c >/dev/null && echo "$c OK" || echo "$c MISSING"
+done
+dpkg -l 2>/dev/null | grep luci-compat || opkg list-installed | grep luci-compat
+```
 ## 安装
 
 ### 方式一：直接拷贝（推荐，适用于已 root 的 OpenWrt）

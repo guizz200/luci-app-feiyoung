@@ -1,0 +1,7 @@
+*.ipk
+*.apk
+build/
+dist/
+*.log
+.DS_Store
+node_modules/

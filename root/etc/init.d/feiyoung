@@ -1,0 +1,121 @@
+#!/bin/sh /etc/rc.common
+# 河北电信飞Young 校园网自动登录 服务
+#
+# 安装:
+#   cp feiyoung.sh        /usr/bin/feiyoung.sh          && chmod +x /usr/bin/feiyoung.sh
+#   mkdir -p /usr/lib/feiyoung
+#   cp feiyoung-daemon.sh /usr/lib/feiyoung/daemon.sh   && chmod +x /usr/lib/feiyoung/daemon.sh
+#   cp feiyoung.init      /etc/init.d/feiyoung          && chmod +x /etc/init.d/feiyoung
+#   cp feiyoung.config    /etc/config/feiyoung          && chmod 600 /etc/config/feiyoung
+#
+# 说明: procd 运行服务时不保证继承 init 脚本 export 的环境变量, 所以这里把
+#       UCI 里的凭据落成一个 shell 变量文件 (/var/run/feiyoung.conf) 供主脚本读取。
+
+START=95
+STOP=10
+USE_PROCD=1
+
+PROG=/usr/bin/feiyoung.sh
+DAEMON=/usr/lib/feiyoung/daemon.sh
+CONF=feiyoung
+RUNTIMECONF=/var/run/feiyoung.conf
+
+read_conf() {
+	enabled=`uci -q get $CONF.main.enabled`
+	[ -z "$enabled" ] && enabled=0
+	case "$enabled" in
+		1|yes|true|on|enabled) enabled=1 ;;
+		*) enabled=0 ;;
+	esac
+
+	username=`uci -q get $CONF.main.username`
+	password=`uci -q get $CONF.main.password`
+	device_type=`uci -q get $CONF.main.device_type`
+	retry_interval=`uci -q get $CONF.main.retry_interval`
+	keepalive_interval=`uci -q get $CONF.main.keepalive_interval`
+	timeout=`uci -q get $CONF.main.timeout`
+	wan_if=`uci -q get $CONF.main.wan_if`
+	# 多学校适配
+	portal_url=`uci -q get $CONF.main.portal_url`
+	portal_probe=`uci -q get $CONF.main.portal_probe`
+	user_agent=`uci -q get $CONF.main.user_agent`
+	username_prefix=`uci -q get $CONF.main.username_prefix`
+
+	[ -z "$device_type" ]        && device_type=mobile
+	[ -z "$retry_interval" ]     && retry_interval=60
+	[ -z "$keepalive_interval" ] && keepalive_interval=120
+	[ -z "$timeout" ]            && timeout=10
+	[ -z "$wan_if" ]             && wan_if=wan
+}
+
+# 把凭据写成 shell 变量文件 (只 root 可读), 主脚本和 daemon 都会 source 它
+write_runtime_conf() {
+	umask 077
+	cat > $RUNTIMECONF <<EOF
+# 本文件由 /etc/init.d/feiyoung 自动生成, 请勿手工编辑
+FY_USER='$username'
+FY_PASS='$password'
+DEVICE_TYPE='$device_type'
+FEIYOUNG_TMO='$timeout'
+FEIYOUNG_WAN='$wan_if'
+FEIYOUNG_RETRY='$retry_interval'
+FEIYOUNG_KEEPALIVE='$keepalive_interval'
+FEIYOUNG_PORTAL='$portal_url'
+FEIYOUNG_PROBE='$portal_probe'
+FEIYOUNG_UA='$user_agent'
+FEIYOUNG_PREFIX='$username_prefix'
+EOF
+	umask 022
+	chmod 600 $RUNTIMECONF
+}
+
+start_service() {
+	read_conf
+
+	[ "$enabled" = "1" ] || {
+		logger -t feiyoung "not enabled in /etc/config/$CONF, skipping"
+		return 0
+	}
+	[ -n "$username" ] || {
+		logger -t feiyoung "ERROR: username empty (uci set $CONF.main.username=...)"
+		return 1
+	}
+	[ -n "$password" ] || {
+		logger -t feiyoung "ERROR: password empty (uci set $CONF.main.password=...)"
+		return 1
+	}
+	[ -x "$PROG" ] || {
+		logger -t feiyoung "ERROR: $PROG not found or not executable"
+		return 1
+	}
+	[ -x "$DAEMON" ] || {
+		logger -t feiyoung "ERROR: $DAEMON not found or not executable (mkdir -p /usr/lib/feiyoung)"
+		return 1
+	}
+
+	write_runtime_conf
+	logger -t feiyoung "starting: account=$username retry=${retry_interval}s keepalive=${keepalive_interval}s"
+
+	procd_open_instance
+	procd_set_param command "$DAEMON"
+	procd_set_param env FEIYOUNG_RETRY="$retry_interval" FEIYOUNG_KEEPALIVE="$keepalive_interval" FEIYOUNG_WAN="$wan_if"
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param file /etc/config/$CONF
+	procd_close_instance
+}
+
+stop_service() {
+	rm -f $RUNTIMECONF
+	logger -t feiyoung "stopped"
+}
+
+reload_service() {
+	stop
+	start
+}
+
+service_triggers() {
+	procd_add_reload_trigger "$CONF"
+}

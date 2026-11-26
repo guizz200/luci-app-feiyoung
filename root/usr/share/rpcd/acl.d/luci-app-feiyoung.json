@@ -1,0 +1,33 @@
+{
+	"luci-app-feiyoung": {
+		"description": "Grant access to FeiYoung campus network procedures",
+		"read": {
+			"ubus": {
+				"luci.feiyoung": [ "status", "log", "dump_input" ],
+				"luci": [ "setInitAction" ]
+			},
+			"file": {
+				"/usr/bin/feiyoung.sh": [ "exec" ],
+				"/etc/init.d/feiyoung": [ "exec" ],
+				"/usr/bin/feiyoung-schedule.sh": [ "exec" ],
+				"/etc/config/feiyoung": [ "read" ]
+			},
+			"uci": [ "feiyoung" ]
+		},
+		"write": {
+			"ubus": {
+				"luci.feiyoung": [ "login", "logout", "restart", "save", "clear_log", "apply_schedule" ]
+			},
+			"file": {
+				"/usr/bin/feiyoung.sh": [ "exec" ],
+				"/etc/init.d/feiyoung": [ "exec" ],
+				"/usr/bin/feiyoung-schedule.sh": [ "exec" ],
+				"/var/log/feiyoung.log": [ "write" ],
+				"/var/run/feiyoung.conf": [ "write" ],
+				"/var/run/feiyoung.schedule-off": [ "write" ],
+				"/etc/crontabs/root": [ "write" ]
+			},
+			"uci": [ "feiyoung" ]
+		}
+	}
+}

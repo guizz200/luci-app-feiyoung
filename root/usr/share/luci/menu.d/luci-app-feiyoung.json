@@ -1,0 +1,57 @@
+{
+	"admin/services/feiyoung": {
+		"title": "飞Young 校园网",
+		"order": 61,
+		"action": {
+			"type": "view",
+			"path": "feiyoung/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-feiyoung" ]
+		}
+	},
+	"admin/services/feiyoung/overview": {
+		"title": "状态与操作",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "feiyoung/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-feiyoung" ]
+		}
+	},
+	"admin/services/feiyoung/config": {
+		"title": "配置",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "feiyoung/config"
+		},
+		"depends": {
+			"acl": [ "luci-app-feiyoung" ]
+		}
+	},
+	"admin/services/feiyoung/schedule": {
+		"title": "定时任务",
+		"order": 30,
+		"action": {
+			"type": "view",
+			"path": "feiyoung/schedule"
+		},
+		"depends": {
+			"acl": [ "luci-app-feiyoung" ]
+		}
+	},
+	"admin/services/feiyoung/log": {
+		"title": "日志",
+		"order": 40,
+		"action": {
+			"type": "view",
+			"path": "feiyoung/log"
+		},
+		"depends": {
+			"acl": [ "luci-app-feiyoung" ]
+		}
+	}
+}
